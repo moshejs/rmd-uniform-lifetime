@@ -1,7 +1,7 @@
 {
   "name": "rmd-uniform-lifetime",
   "version": "1.0.0",
-  "description": "IRS Required Minimum Distribution (RMD) math — the Uniform Lifetime and Single Life tables (Pub 590-B, 2022+) plus SECURE 2.0 required-beginning-age logic. Zero dependencies.",
+  "description": "IRS Required Minimum Distribution (RMD) math — the Uniform Lifetime, Single Life and Joint & Last Survivor tables (26 CFR 1.401(a)(9)-9, 2022+) plus 70½/SECURE/SECURE 2.0 required-beginning-date logic. Zero dependencies.",
   "keywords": [
     "rmd",
     "required-minimum-distribution",
@@ -10,6 +10,7 @@
     "retirement",
     "uniform-lifetime-table",
     "single-life-table",
+    "joint-life-table",
     "secure-act",
     "irs",
     "pub-590b",
@@ -26,13 +27,19 @@
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "types": "./dist/index.d.cts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"

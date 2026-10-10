@@ -6,9 +6,13 @@
  * logic. An RMD is the prior-year-end account balance divided by the
  * applicable life-expectancy divisor.
  *
- * Divisors are the official 2022+ tables (effective for distribution years
- * beginning on/after 2022-01-01; not indexed, they do not change annually).
+ * Divisors are the official 2022+ tables of 26 CFR 1.401(a)(9)-9 (effective
+ * for distribution years beginning on/after 2022-01-01; not indexed, they do
+ * not change annually). The Joint and Last Survivor Table (Table II) is in
+ * ./joint-table.ts, generated mechanically from the eCFR.
  */
+
+import { JOINT_TABLE_DATA } from "./joint-table.js";
 
 /**
  * IRS Uniform Lifetime Table (Table III), 2022+. Age → distribution period.
@@ -135,28 +139,195 @@ export function rmdSingleLife(
 }
 
 /**
- * The age at which RMDs must begin, per SECURE 2.0, from a birth year:
- * - born ≤ 1950 → 72
- * - born 1951–1959 → 73
- * - born ≥ 1960 → 75
+ * Joint and Last Survivor life expectancy (Table II, 26 CFR 1.401(a)(9)-9(d))
+ * for two ages as of their birthdays in the distribution year. Symmetric in
+ * its arguments; ages ≥ 120 use the "120 and older" column.
  *
- * (An owner's first RMD may be deferred to April 1 of the year after reaching
- * this age — the Required Beginning Date — but two distributions are then due
- * that year.)
+ * ```ts
+ * jointLastSurvivorDivisor(75, 64); // 25.3 (IRS Pub 590-B example)
+ * ```
  */
-export function requiredBeginningAge(birthYear: number): 72 | 73 | 75 {
+export function jointLastSurvivorDivisor(age1: number, age2: number): number {
+  checkAge(age1, "age1");
+  checkAge(age2, "age2");
+  const a = Math.min(Math.max(age1, age2), TABLE_MAX_AGE);
+  const b = Math.min(Math.min(age1, age2), TABLE_MAX_AGE);
+  const k = 2 * ((a * (a + 1)) / 2 + b);
+  return parseInt(JOINT_TABLE_DATA.slice(k, k + 2), 36) / 10;
+}
+
+/**
+ * The owner's applicable denominator for a lifetime RMD (26 CFR
+ * 1.401(a)(9)-5(c)): the Joint and Last Survivor divisor if the owner's
+ * spouse is the SOLE beneficiary for the whole year and more than 10 years
+ * younger, otherwise the Uniform Lifetime divisor. Pass the spouse's age only
+ * when the spouse is the sole beneficiary.
+ *
+ * (A spouse exactly 10 years younger by age-in-year gets the same number
+ * either way — the Uniform table is the joint table at a 10-year gap.)
+ *
+ * ```ts
+ * ownerDivisor(75);     // 24.6 (Uniform Lifetime)
+ * ownerDivisor(75, 64); // 25.3 (spouse 11 years younger → Joint and Last Survivor)
+ * ```
+ */
+export function ownerDivisor(ownerAge: number, soleBeneficiarySpouseAge?: number): number {
+  const uniform = uniformLifetimeDivisor(ownerAge);
+  if (soleBeneficiarySpouseAge === undefined) return uniform;
+  checkAge(soleBeneficiarySpouseAge, "soleBeneficiarySpouseAge");
+  return ownerAge - soleBeneficiarySpouseAge > 10
+    ? jointLastSurvivorDivisor(ownerAge, soleBeneficiarySpouseAge)
+    : uniform;
+}
+
+/**
+ * An owner's RMD, choosing the table automatically (see {@link ownerDivisor}).
+ *
+ * ```ts
+ * rmdOwner(100_000, 75, 64); // 3952.57 — IRS Pub 590-B: $3,953
+ * ```
+ */
+export function rmdOwner(
+  priorYearEndBalance: number,
+  ownerAge: number,
+  soleBeneficiarySpouseAge?: number,
+): number {
+  return rmd(priorYearEndBalance, ownerDivisor(ownerAge, soleBeneficiarySpouseAge));
+}
+
+/** The applicable age for RMDs: 70½ (pre-SECURE), 72 (SECURE), 73 or 75 (SECURE 2.0). */
+export type ApplicableAge = 70.5 | 72 | 73 | 75;
+
+function checkBirth(birthYear: number, birthMonth: number | undefined): void {
   if (!Number.isInteger(birthYear)) {
     throw new RangeError(`birthYear must be an integer, got ${birthYear}`);
+  }
+  if (birthMonth !== undefined && (!Number.isInteger(birthMonth) || birthMonth < 1 || birthMonth > 12)) {
+    throw new RangeError(`birthMonth must be an integer 1–12, got ${birthMonth}`);
+  }
+}
+
+/**
+ * The applicable age at which RMDs must begin, from the owner's date of birth
+ * (26 CFR 1.401(a)(9)-2(b)(2); IRC §401(a)(9)(C) as amended by SECURE and
+ * SECURE 2.0):
+ * - born before July 1, 1949 → 70½
+ * - born July 1, 1949 – 1950 → 72
+ * - born 1951–1959 → 73
+ * - born 1960 or later → 75
+ *
+ * `birthMonth` (1–12) is required only for owners born in 1949. For 1959 the
+ * final regulations reserve the rule; 73 follows the 2024 proposed
+ * regulations (§1.401(a)(9)-2(b)(2)(v)).
+ *
+ * ```ts
+ * requiredBeginningAge(1955); // 73
+ * requiredBeginningAge(1949, 3); // 70.5
+ * ```
+ */
+export function requiredBeginningAge(birthYear: number, birthMonth?: number): ApplicableAge {
+  checkBirth(birthYear, birthMonth);
+  if (birthYear < 1949) return 70.5;
+  if (birthYear === 1949) {
+    if (birthMonth === undefined) {
+      throw new RangeError(
+        "born in 1949: the applicable age is 70½ if born before July 1, otherwise 72 — pass birthMonth",
+      );
+    }
+    return birthMonth <= 6 ? 70.5 : 72;
   }
   if (birthYear <= 1950) return 72;
   if (birthYear <= 1959) return 73;
   return 75;
 }
 
-/** True if the owner must take an RMD for a given distribution year. */
-export function isRmdRequired(birthYear: number, distributionYear: number): boolean {
+/** Possible first-RMD years [earliest, latest] when the birth month is unknown. */
+function firstYearRange(birthYear: number, birthMonth: number | undefined): [number, number] {
+  checkBirth(birthYear, birthMonth);
+  if (birthYear < 1949 || (birthYear === 1949 && (birthMonth ?? 1) <= 6)) {
+    // 70½ is reached in the birth year + 70 if born January–June, else + 71.
+    if (birthMonth !== undefined) {
+      const y = birthYear + (birthMonth <= 6 ? 70 : 71);
+      return [y, y];
+    }
+    // 1949 with unknown month: 70½ in 2019 (Jan–Jun) or age 72 in 2021 (Jul–Dec).
+    return birthYear === 1949 ? [2019, 2021] : [birthYear + 70, birthYear + 71];
+  }
+  const y = birthYear + requiredBeginningAge(birthYear, birthMonth);
+  return [y, y];
+}
+
+/**
+ * The owner's first distribution calendar year — the year the applicable age
+ * is reached. Its RMD may be delayed to the required beginning date (April 1
+ * of the next year). `birthMonth` is required for owners born before July 1949
+ * (the year 70½ was reached depends on it).
+ *
+ * ```ts
+ * firstRmdYear(1955); // 2028
+ * ```
+ */
+export function firstRmdYear(birthYear: number, birthMonth?: number): number {
+  const [lo, hi] = firstYearRange(birthYear, birthMonth);
+  if (lo !== hi) {
+    throw new RangeError(`the first RMD year for an owner born in ${birthYear} depends on birthMonth`);
+  }
+  return lo;
+}
+
+/**
+ * The required beginning date (ISO "YYYY-MM-DD"): April 1 of the year after
+ * the first distribution calendar year. (Employer plans may delay this to
+ * April 1 after retirement for non-5% owners — not modelled.)
+ *
+ * ```ts
+ * requiredBeginningDate(1955); // "2029-04-01"
+ * ```
+ */
+export function requiredBeginningDate(birthYear: number, birthMonth?: number): string {
+  return `${firstRmdYear(birthYear, birthMonth) + 1}-04-01`;
+}
+
+/**
+ * True if the owner must take an RMD for a given distribution year: the year
+ * is the first distribution calendar year or later — except 2020, for which
+ * the CARES Act (§2203) waived RMDs. `birthMonth` is needed only when the
+ * answer depends on it (owners born before July 1949, in their 70½ year).
+ *
+ * ```ts
+ * isRmdRequired(1952, 2025); // true — turns 73
+ * ```
+ */
+export function isRmdRequired(birthYear: number, distributionYear: number, birthMonth?: number): boolean {
   if (!Number.isInteger(distributionYear)) {
     throw new RangeError(`distributionYear must be an integer, got ${distributionYear}`);
   }
-  return distributionYear - birthYear >= requiredBeginningAge(birthYear);
+  const [lo, hi] = firstYearRange(birthYear, birthMonth);
+  if (distributionYear === 2020) return false; // CARES Act waiver
+  if (distributionYear >= hi) return true;
+  if (distributionYear < lo) return false;
+  throw new RangeError(
+    `whether an RMD is due in ${distributionYear} for an owner born in ${birthYear} depends on birthMonth`,
+  );
+}
+
+/**
+ * The deadline (ISO "YYYY-MM-DD") for the RMD of a distribution year, or
+ * `null` if none is required: April 1 of the next year for the first
+ * distribution calendar year (two RMDs then fall due in that next year),
+ * December 31 of the year otherwise.
+ *
+ * ```ts
+ * rmdDeadline(1955, 2028); // "2029-04-01"
+ * rmdDeadline(1955, 2029); // "2029-12-31"
+ * ```
+ */
+export function rmdDeadline(birthYear: number, distributionYear: number, birthMonth?: number): string | null {
+  if (!isRmdRequired(birthYear, distributionYear, birthMonth)) return null;
+  const [lo, hi] = firstYearRange(birthYear, birthMonth);
+  if (distributionYear > hi) return `${distributionYear}-12-31`;
+  if (lo !== hi) {
+    throw new RangeError(`the RMD deadline for an owner born in ${birthYear} depends on birthMonth`);
+  }
+  return `${distributionYear + 1}-04-01`;
 }
