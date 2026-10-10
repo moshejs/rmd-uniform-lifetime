@@ -1,6 +1,6 @@
 {
   "name": "rmd-uniform-lifetime",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "IRS Required Minimum Distribution (RMD) math — the Uniform Lifetime, Single Life and Joint & Last Survivor tables (26 CFR 1.401(a)(9)-9, 2022+) plus 70½/SECURE/SECURE 2.0 required-beginning-date logic. Zero dependencies.",
   "keywords": [
     "rmd",
